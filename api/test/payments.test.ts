@@ -76,6 +76,39 @@ describe('pay a share', () => {
 
     expect(paid.status).toBe(404)
   })
+
+  it('allows only one payment when two different keys pay the same share concurrently', async () => {
+    const { homeId, billId, firstShare } = await setup()
+
+    const [resA, resB] = await Promise.all([
+      pay(billId, firstShare.id, crypto.randomUUID()),
+      pay(billId, firstShare.id, crypto.randomUUID()),
+    ])
+
+    const statuses = [resA.status, resB.status].sort((a, b) => a - b)
+    expect(statuses).toEqual([200, 409])
+
+    const outstanding = await balances(homeId)
+    expect(outstanding.body.balances.map((balance) => balance.outstandingCents)).toEqual([0, 500])
+  })
+
+  it('returns 200 with the same paidAt when the same key is sent concurrently', async () => {
+    const { homeId, billId, firstShare } = await setup()
+    const key = crypto.randomUUID()
+
+    const [resA, resB] = await Promise.all([
+      pay(billId, firstShare.id, key),
+      pay(billId, firstShare.id, key),
+    ])
+
+    expect(resA.status).toBe(200)
+    expect(resB.status).toBe(200)
+    expect(resA.body.paidAt).toEqual(expect.any(String))
+    expect(resB.body.paidAt).toBe(resA.body.paidAt)
+
+    const outstanding = await balances(homeId)
+    expect(outstanding.body.balances.map((balance) => balance.outstandingCents)).toEqual([0, 500])
+  })
 })
 
 describe('balances', () => {
