@@ -155,3 +155,17 @@ You must understand every line you submit. We check this with your video and in 
 5. Paste the repository link and the video link in the application form.
 
 We will run `pnpm install && pnpm check && pnpm typecheck && pnpm test` on your repository.
+
+## Decisions
+
+1. **Deterministic Integer-Cent Remainder Distribution & Explicit Member Sequencing (`seq`):**
+   - _Problem:_ Floating-point arithmetic causes rounding drift (`0.1 + 0.2 !== 0.3`), and text UUID primary keys do not preserve insertion order in SQLite.
+   - _Decision:_ Store all monetary amounts strictly as integer cents (`total_cents`, `amount_cents`) enforced via SQLite `CHECK (typeof(...) = 'integer')` constraints. Assign each member a monotonically increasing `seq` integer per home on creation (`ORDER BY seq ASC`), and distribute `base = Math.floor(totalCents / N)` with the first `R = totalCents % N` members receiving `+1` cent. Both the bill and all its shares are written atomically via `c.env.DB.batch([...])`.
+
+2. **Lock-Free Atomic Conditional Update for Idempotent & Concurrent Share Payments:**
+   - _Problem:_ A naive read-then-write (`SELECT` followed by `UPDATE`) introduces a Time-of-Check to Time-of-Use (TOCTOU) race condition when two requests pay the same share concurrently or when a client retries on an unreliable network.
+   - _Decision:_ Execute a single conditional mutation first (`UPDATE shares SET paid_at = ?, idempotency_key = ? WHERE id = ? AND bill_id = ? AND paid_at IS NULL`) batched with a `SELECT` of the share row. Only the first writer transitions `paid_at` from `NULL`. Subsequent or concurrent requests inspect the persisted `idempotency_key`: matching keys return `200 OK` with the original `paidAt` timestamp (safe idempotent retry), while differing keys return `409 Conflict`.
+
+3. **Database-Level Invariant Enforcement & Pessimistic UI State:**
+   - _Problem:_ Application bugs or partial network failures can leave orphaned records, half-paid states, or misleading optimistic UI states when a payment fails (`409`/`500`).
+   - _Decision:_ Enforce 11 named database constraints in `0001_init.sql` (including `chk_shares_payment_state` ensuring `paid_at` and `idempotency_key` are either both `NULL` or both non-null, `uq_shares_bill_member`, and positive integer checks). On the React frontend, persist a per-share `Idempotency-Key` across retries and use pessimistic state updates so shares remain `Unpaid` with an explicit error banner whenever a request fails.
